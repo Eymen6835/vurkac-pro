@@ -1,0 +1,82 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Property {
+  id                   String           @id @default(cuid())
+  title                String
+  description          String
+  propertyType         String           @map("property_type") // ETW, MFH, DHH, EFH
+  address              String
+  zipCode              String           @map("zip_code")
+  city                 String
+  district             String
+  federalState         String           @map("federal_state") // z.B. "Sachsen", "NRW", "Bayern"
+  latitude             Float
+  longitude            Float
+  livingAreaSqm        Float            @map("living_area_sqm")
+  rooms                Float
+  yearBuilt            Int              @map("year_built")
+  floor                Int?
+  energyClass          String           @map("energy_class")
+  condition            String           // Gepflegt, Sanierungsbedürftig, Erstbezug nach Sanierung, Neuwertig
+  isRented             Boolean          @default(true) @map("is_rented")
+  purchasePrice        Float            @map("purchase_price")
+  initialPrice         Float            @map("initial_price")
+  estimatedRentCold    Float            @map("estimated_rent_cold")
+  currentRentCold      Float?           @map("current_rent_cold")
+  estimatedMarketValue Float            @map("estimated_market_value")
+  hoaTotalMonthly      Float            @map("hoa_total_monthly")
+  nonAllocatableHoa    Float            @map("non_allocatable_hoa")
+  maintenanceReserve   Float            @map("maintenance_reserve")
+  brokerFeePercent     Float            @map("broker_fee_percent")
+  firstListedAt        DateTime         @map("first_listed_at")
+  lastUpdatedAt        DateTime         @default(now()) @map("last_updated_at")
+
+  sources              PropertySource[]
+  priceHistory         PriceHistory[]
+
+  @@index([city])
+  @@index([federalState])
+  @@index([purchasePrice])
+  @@map("properties")
+}
+
+model PropertySource {
+  id               String   @id @default(cuid())
+  propertyId       String   @map("property_id")
+  portalName       String   @map("portal_name") // ImmoScout24, Kleinanzeigen, Immowelt, Ohne-Makler
+  externalId       String   @map("external_id")
+  sourceUrl        String   @map("source_url")
+  listedPrice      Float    @map("listed_price")
+  brokerFeePercent Float    @map("broker_fee_percent")
+  firstSeenAt      DateTime @map("first_seen_at")
+  lastSeenAt       DateTime @map("last_seen_at")
+  isActive         Boolean  @default(true) @map("is_active")
+
+  property         Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+  @@index([portalName])
+  @@map("property_sources")
+}
+
+model PriceHistory {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  recordedAt    DateTime @map("recorded_at")
+  price         Float
+  changePercent Float    @map("change_percent")
+  portalName    String   @map("portal_name")
+  note          String?
+
+  property      Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, recordedAt])
+  @@map("price_history")
+}
