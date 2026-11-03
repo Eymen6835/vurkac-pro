@@ -21,6 +21,7 @@ class RawListing(BaseModel):
     construction_year: Optional[int] = 1980
     actual_rent_cold: Optional[float] = None
     has_broker_fee: bool = True
+    first_listed_at: Optional[str] = None
 
 class EnrichedDeal(RawListing):
     fingerprint: str

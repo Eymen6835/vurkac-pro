@@ -3,21 +3,22 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 import redis.asyncio as redis
 from calculator import RawListing, EnrichedDeal, evaluate_listing
-from ohne_makler_scraper import fetch_real_ohne_makler_listings, zip_to_state_and_coords
+from ohne_makler_scraper import HEADERS, fetch_real_ohne_makler_listings, zip_to_state_and_coords
 from mannheim_apify_agent import (
     ExtendedRawListing,
     REAL_PROPERTIES_PATH,
     fetch_immoscout_mobile_direct_fast,
     fetch_immowelt_direct_fast,
     fetch_kleinanzeigen_direct_fast,
+    fetch_kleinanzeigen_true_creation_date,
     persist_new_deal_to_json,
 )
 
 REDIS_URL = "redis://localhost:6379"
 
-# Maximum-Response: Alle 15 Sekunden direkter Parallel-Abruf über alle 4 Portale (0 $ Kosten, < 1s Latenz)
 FAST_DIRECT_POLL_INTERVAL_SECONDS = 15
 APIFY_DELTA_POLL_INTERVAL_SECONDS = 15
 
@@ -85,6 +86,7 @@ class DeltaScraperEngine:
                     district=item.get("district", "Provisionsfrei"),
                     latitude=item.get("latitude", 49.4875),
                     longitude=item.get("longitude", 8.4660),
+                    is_genuinely_new_today=True,
                 )
             )
         return results
@@ -95,56 +97,63 @@ class DeltaScraperEngine:
         await self.seed_seen_ids_from_disk()
         newly_published: list[EnrichedDeal] = []
 
-        for ext_raw in reversed(listings):
-            if not await self.is_new_portal_id(ext_raw.portal, ext_raw.external_id):
-                continue
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=10.0) as client:
+            for ext_raw in reversed(listings):
+                if not await self.is_new_portal_id(ext_raw.portal, ext_raw.external_id):
+                    continue
 
-            _, _, _, _, ref_sqm_price, ref_sqm_rent = zip_to_state_and_coords(ext_raw.zip_code)
-            raw = RawListing(
-                portal=ext_raw.portal,
-                external_id=ext_raw.external_id,
-                url=ext_raw.url,
-                title=ext_raw.title,
-                zip_code=ext_raw.zip_code,
-                city=ext_raw.city,
-                state_code=ext_raw.state_code,
-                price=ext_raw.price,
-                living_area=ext_raw.living_area,
-                rooms=ext_raw.rooms,
-                construction_year=ext_raw.construction_year,
-                actual_rent_cold=ext_raw.actual_rent_cold,
-                has_broker_fee=ext_raw.has_broker_fee,
-            )
-            deal = evaluate_listing(
-                raw,
-                avg_sqm_price_zip=ref_sqm_price,
-                avg_sqm_rent_zip=ref_sqm_rent,
-            )
-            if await self.check_cross_portal_duplicate(
-                deal.fingerprint, deal.portal, deal.url
-            ):
-                continue
+                # Bei Kleinanzeigen das echte Erstellungsdatum (#viewad-extra-info) vom Exposé prüfen,
+                # damit hochgeschobene Alt-Inserate (z. B. vom 22.09.2026) nicht als Neuerscheinung zählen!
+                if ext_raw.portal == "Kleinanzeigen" and ext_raw.url:
+                    true_iso, is_today = await fetch_kleinanzeigen_true_creation_date(
+                        client, ext_raw.url
+                    )
+                    ext_raw.listing_date = true_iso
+                    ext_raw.is_genuinely_new_today = is_today and ext_raw.is_genuinely_new_today
 
-            deal_json = deal.model_dump_json()
-            await self.redis.lpush("recent_deals", deal_json)
-            await self.redis.ltrim("recent_deals", 0, 199)
-            await self.redis.publish("live_deals_stream", deal_json)
-            persist_new_deal_to_json(ext_raw, deal)
-            newly_published.append(deal)
-            self.new_deals_found += 1
+                _, _, _, _, ref_sqm_price, ref_sqm_rent = zip_to_state_and_coords(ext_raw.zip_code)
+                raw = RawListing(
+                    portal=ext_raw.portal,
+                    external_id=ext_raw.external_id,
+                    url=ext_raw.url,
+                    title=ext_raw.title,
+                    zip_code=ext_raw.zip_code,
+                    city=ext_raw.city,
+                    state_code=ext_raw.state_code,
+                    price=ext_raw.price,
+                    living_area=ext_raw.living_area,
+                    rooms=ext_raw.rooms,
+                    construction_year=ext_raw.construction_year,
+                    actual_rent_cold=ext_raw.actual_rent_cold,
+                    has_broker_fee=ext_raw.has_broker_fee,
+                    first_listed_at=ext_raw.listing_date,
+                )
+                deal = evaluate_listing(
+                    raw,
+                    avg_sqm_price_zip=ref_sqm_price,
+                    avg_sqm_rent_zip=ref_sqm_rent,
+                )
+                if await self.check_cross_portal_duplicate(
+                    deal.fingerprint, deal.portal, deal.url
+                ):
+                    continue
+
+                persist_new_deal_to_json(ext_raw, deal)
+
+                # Nur echte Neuerscheinungen von heute als Live-Deal pushen & alarmieren!
+                if ext_raw.is_genuinely_new_today:
+                    deal_json = deal.model_dump_json()
+                    await self.redis.lpush("recent_deals", deal_json)
+                    await self.redis.ltrim("recent_deals", 0, 199)
+                    await self.redis.publish("live_deals_stream", deal_json)
+                    newly_published.append(deal)
+                    self.new_deals_found += 1
 
         return newly_published
 
     async def scan_all_portals_now(
         self, include_apify: bool = True, max_items_per_portal: int = 20
     ) -> dict[str, Any]:
-        """
-        Führt sofort einen parallelen Maximum-Response-Scan über ALLE 4 Portale direkt aus:
-        1. ImmoScout24 Mobile-App API (sorting=-firstactivation, Mannheim +50km)
-        2. Immowelt Direkt (DateDesc, Mannheim +50km)
-        3. Kleinanzeigen Direkt (Neueste zuerst, Mannheim +50km)
-        4. Ohne-Makler Direkt
-        """
         self.total_scans += 1
         now_iso = datetime.now(timezone.utc).isoformat()
         self.last_fast_scan_at = now_iso

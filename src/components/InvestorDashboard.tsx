@@ -50,6 +50,7 @@ interface RealtimeEnrichedDeal {
   construction_year?: number;
   actual_rent_cold?: number | null;
   has_broker_fee: boolean;
+  first_listed_at?: string | null;
   fingerprint: string;
   price_per_sqm: number;
   estimated_market_value: number;
@@ -117,6 +118,7 @@ function zipToCoords(zipCode: string, extId: string): { lat: number; lng: number
 
 function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
   const nowIso = new Date().toISOString();
+  const listedIso = deal.first_listed_at || nowIso;
   const coords = CITY_COORDS[deal.city] ?? zipToCoords(deal.zip_code, deal.external_id);
   const id = `live-${deal.portal}-${deal.external_id}`;
   const brokerPct = deal.has_broker_fee ? 3.57 : 0;
@@ -126,12 +128,12 @@ function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
   return {
     id,
     title: deal.title,
-    description: `Provisionsfreies Original-Inserat auf ${deal.portal} (PLZ ${deal.zip_code} ${deal.city} · Fingerprint: ${deal.fingerprint})`,
+    description: `Original-Inserat auf ${deal.portal} (PLZ ${deal.zip_code} ${deal.city} · Fingerprint: ${deal.fingerprint})`,
     propertyType: "ETW",
     address: `${deal.zip_code} ${deal.city}`,
     zipCode: deal.zip_code,
     city: deal.city,
-    district: "Provisionsfrei",
+    district: deal.has_broker_fee ? "Metropolregion Rhein-Neckar" : "Provisionsfrei",
     federalState: STATE_CODE_MAP[deal.state_code] ?? "Baden-Württemberg",
     latitude: coords.lat,
     longitude: coords.lng,
@@ -151,7 +153,7 @@ function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
     nonAllocatableHoa: nonAlloc,
     maintenanceReserve: maint,
     brokerFeePercent: brokerPct,
-    firstListedAt: nowIso,
+    firstListedAt: listedIso,
     lastUpdatedAt: nowIso,
     sources: [
       {
@@ -161,7 +163,7 @@ function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
         sourceUrl: deal.url,
         listedPrice: deal.price,
         brokerFeePercent: brokerPct,
-        firstSeenAt: nowIso,
+        firstSeenAt: listedIso,
         lastSeenAt: nowIso,
         isActive: true,
       },
@@ -169,7 +171,7 @@ function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
     priceHistory: [
       {
         id: `ph-${id}`,
-        recordedAt: nowIso,
+        recordedAt: listedIso,
         price: deal.price,
         changePercent: 0,
         portalName: deal.portal,

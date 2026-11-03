@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,20 +24,11 @@ MANNHEIM_LON = 8.4660
 MANNHEIM_RADIUS_KM = 50
 
 IMMOSCOUT_MOBILE_SEARCH_URL = "https://api.mobile.immobilienscout24.de/search/list"
-IMMOSCOUT_MOBILE_EXPOSE_URL = "https://api.mobile.immobilienscout24.de/expose"
-IMMOSCOUT_MANNHEIM_50KM_URL = (
-    "https://www.immobilienscout24.de/Suche/radius/wohnung-kaufen"
-    "?centerofsearchaddress=Mannheim;;;;;;"
-    "&geocoordinates=49.4875;8.466;50.0"
-    "&sorting=2"
-)
-
 IMMOWELT_MANNHEIM_50KM_URL = (
     "https://www.immowelt.de/classified-search"
     "?distributionTypes=Buy&estateTypes=Apartment"
     "&locations=AD08DE5642&order=DateDesc&radius=50000"
 )
-
 KLEINANZEIGEN_MANNHEIM_50KM_URL = (
     "https://www.kleinanzeigen.de/s-wohnung-kaufen/mannheim/c196l7974r50"
 )
@@ -88,8 +79,68 @@ def extract_metric_from_text(text: str, patterns: list[str]) -> Optional[float]:
     return None
 
 
+def parse_published_to_iso_and_freshness(published_str: str) -> tuple[str, bool]:
+    """
+    Wandelt Angaben wie 'vor 12 Minuten', 'vor 3 Stunden', 'vor 5 Tagen' oder '22.09.2026'
+    in ein echtes ISO-Datum um und gibt zurück, ob das Inserat wirklich von heute stammt.
+    """
+    now = datetime.now(timezone.utc)
+    txt = (published_str or "").strip().lower()
+    if not txt:
+        return now.isoformat(), True
+
+    m_min = re.search(r"vor\s+(\d+)\s*minute", txt)
+    if m_min or "gerade" in txt or "soeben" in txt:
+        mins = int(m_min.group(1)) if m_min else 1
+        return (now - timedelta(minutes=mins)).isoformat(), True
+
+    m_std = re.search(r"vor\s+(\d+)\s*stunde", txt)
+    if m_std or "heute" in txt:
+        hrs = int(m_std.group(1)) if m_std else 1
+        return (now - timedelta(hours=hrs)).isoformat(), True
+
+    m_days = re.search(r"vor\s+(\d+)\s*tag", txt)
+    if m_days or "gestern" in txt:
+        days = int(m_days.group(1)) if m_days else 1
+        return (now - timedelta(days=days)).isoformat(), False
+
+    m_date = re.search(r"(\d{2})\.(\d{2})\.(\d{4})", txt)
+    if m_date:
+        day, month, year = int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3))
+        try:
+            dt = datetime(year, month, day, 10, 0, tzinfo=timezone.utc)
+            is_today = dt.date() == now.date()
+            return dt.isoformat(), is_today
+        except ValueError:
+            pass
+
+    return now.isoformat(), False
+
+
+async def fetch_kleinanzeigen_true_creation_date(
+    client: httpx.AsyncClient, url: str
+) -> tuple[str, bool]:
+    """
+    Liest das echte Erstellungsdatum aus <div id='viewad-extra-info'> auf der Kleinanzeigen-Exposé-Seite aus,
+    damit hochgeschobene Alt-Inserate (PRIORITY_AD / TOP_AD vom z.B. 22.09.2026) nicht als 'Neu von heute' zählen.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        resp = await client.get(url, timeout=8.0)
+        if resp.status_code == 200:
+            m = re.search(
+                r'id="viewad-extra-info"[\s\S]{0,350}?<span>\s*(\d{2}\.\d{2}\.\d{4})\s*</span>',
+                resp.text,
+            )
+            if m:
+                return parse_published_to_iso_and_freshness(m.group(1))
+    except Exception:
+        pass
+    return now.isoformat(), False
+
+
 class ExtendedRawListing(RawListing):
-    """Erweitert RawListing um alle 14 Pflichtfelder für Mannheim."""
+    """Erweitert RawListing um alle 14 Pflichtfelder + Echtheitsprüfung des Erstellungsdatums."""
     description: str = ""
     address_line: str = ""
     district: str = "Metropolregion Rhein-Neckar"
@@ -101,16 +152,16 @@ class ExtendedRawListing(RawListing):
     condition: str = "Gepflegt"
     is_rented: bool = False
     listing_date: str = ""
+    is_genuinely_new_today: bool = True
     images: list[str] = []
 
 
 async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
     """
     Direkter Abruf über die offizielle ImmoScout24 Mobile-App API (sorting=-firstactivation,
-    Mannheim + 50 km Umkreis). Antwortzeit ~0.35s, 0 $ Kosten, unabhängig vom Apify-Monatslimit!
+    Mannheim + 50 km Umkreis). Wertet das Feld `published` ('vor X Minuten' vs. ältere Daten) exakt aus.
     """
     results: list[ExtendedRawListing] = []
-    now_iso = datetime.now(timezone.utc).isoformat()
     headers = {
         "User-Agent": "ImmoScout24_1420_30_._",
         "Accept": "application/json",
@@ -151,13 +202,11 @@ async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
                     m_zip = re.search(r"\b(\d{5})\b", addr_line)
                     zip_code = m_zip.group(1) if m_zip else "68159"
 
-                # Stadt aus Adresszeile ableiten
                 city = "Mannheim"
                 m_city = re.search(r"\b\d{5}\s+([^,\(\n]+)", addr_line)
                 if m_city:
                     city = m_city.group(1).strip()
 
-                # Attribute: [Kaufpreis, Wohnfläche, Zimmer]
                 price = 0.0
                 living_area = 60.0
                 rooms = 2.5
@@ -180,6 +229,7 @@ async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
                 rent = extract_metric_from_text(title, RENT_PATTERNS)
                 hausgeld = round(living_area * 3.8, 2)
                 published_label = str(item.get("published") or "")
+                true_iso, is_today = parse_published_to_iso_and_freshness(published_label)
 
                 results.append(
                     ExtendedRawListing(
@@ -196,7 +246,7 @@ async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
                         construction_year=1985,
                         actual_rent_cold=rent,
                         has_broker_fee=not bool(item.get("isPrivate")),
-                        description=f"ImmoScout24 Live ({published_label}): {title} · {addr_line}",
+                        description=f"ImmoScout24 ({published_label or 'aktuell'}): {title} · {addr_line}",
                         address_line=addr_line,
                         district=addr_line,
                         latitude=lat_exact,
@@ -204,7 +254,8 @@ async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
                         hausgeld=hausgeld,
                         energy_class=str(item.get("energyEfficiencyClass") or "C"),
                         is_rented="kapitalanlage" in title.lower() or "vermietet" in title.lower(),
-                        listing_date=now_iso,
+                        listing_date=true_iso,
+                        is_genuinely_new_today=is_today,
                     )
                 )
     except Exception as exc:
@@ -215,7 +266,6 @@ async def fetch_immoscout_mobile_direct_fast() -> list[ExtendedRawListing]:
 async def fetch_immowelt_direct_fast() -> list[ExtendedRawListing]:
     """
     Direkter Abruf der neuesten Immowelt-Kaufwohnungen für Mannheim (+50 km, DateDesc).
-    Antwortzeit ~0.45s, 0 $ Kosten.
     """
     results: list[ExtendedRawListing] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -240,7 +290,6 @@ async def fetch_immowelt_direct_fast() -> list[ExtendedRawListing]:
                 card = a_tag.find_parent("div")
                 card_text = card.get_text(" | ", strip=True) if card else title_attr
 
-                # Beispiel title_attr: "Wohnung zum Kauf - Mannheim - 166.000€ - 2 Zimmer, 68 m², Geschoss 3/5"
                 m_price = re.search(r"([\d.]+(?:,\d+)?)\s*€", title_attr + " " + card_text)
                 price = _parse_german_number(m_price.group(1)) if m_price else 0.0
                 if price < 25000:
@@ -287,6 +336,7 @@ async def fetch_immowelt_direct_fast() -> list[ExtendedRawListing]:
                         floor=floor,
                         hausgeld=round(living_area * 3.8, 2),
                         listing_date=now_iso,
+                        is_genuinely_new_today="| Neu |" in card_text,
                     )
                 )
     except Exception as exc:
@@ -296,8 +346,9 @@ async def fetch_immowelt_direct_fast() -> list[ExtendedRawListing]:
 
 async def fetch_kleinanzeigen_direct_fast() -> list[ExtendedRawListing]:
     """
-    Ultraschneller Direkt-Poller für Kleinanzeigen (Mannheim + 50 km, Eigentumswohnungen, neueste zuerst).
-    Antwortzeit ~0.40s, 0 $ Kosten.
+    Ultraschneller Direkt-Poller für Kleinanzeigen (Mannheim + 50 km).
+    Filtert rotierende 'TOP'-Werbeanzeigen aus und erkennt hochgeschobene Alt-Inserate
+    über die chronologische Kleinanzeigen-Anzeigennummer sowie das echte Datum im Exposé.
     """
     results: list[ExtendedRawListing] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -312,11 +363,17 @@ async def fetch_kleinanzeigen_direct_fast() -> list[ExtendedRawListing]:
                 href = str(article.get("data-href", "")).strip()
                 if not ad_id:
                     continue
-                url = f"https://www.kleinanzeigen.de{href}" if href.startswith("/") else href
-                title_el = article.find("a", class_="ellipsis")
-                title = title_el.get_text(" ", strip=True) if title_el else f"ETW #{ad_id}"
 
                 full_text = article.get_text(" | ", strip=True)
+                # 1. Rotierende bezahlte TOP-Werbeanzeigen überspringen
+                if "| TOP |" in full_text or full_text.startswith("TOP |"):
+                    continue
+
+                url = f"https://www.kleinanzeigen.de{href}" if href.startswith("/") else href
+                h3_el = article.find("h3")
+                title_el = article.find("a", class_="ellipsis") or (h3_el.find("a") if h3_el else None)
+                title = title_el.get_text(" ", strip=True) if title_el else f"ETW #{ad_id}"
+
                 m_price = re.search(r"([\d.]+)\s*€", full_text)
                 price = _parse_german_number(m_price.group(1)) if m_price else 0.0
                 if price < 25000:
@@ -342,6 +399,12 @@ async def fetch_kleinanzeigen_direct_fast() -> list[ExtendedRawListing]:
                 hausgeld = extract_metric_from_text(desc, HAUSGELD_PATTERNS) or round(living_area * 3.8, 2)
                 rent = extract_metric_from_text(desc, RENT_PATTERNS)
 
+                # Chronologische Kleinanzeigen-ID-Prüfung:
+                # Neue Inserate ab heute (03.11.2026) haben IDs >= 3558000000.
+                # Ältere IDs (wie 3506987868 vom 22.09.2026) sind lediglich bezahlt hochgeschoben (PRIORITY_AD).
+                ad_id_num = int(ad_id) if ad_id.isdigit() else 0
+                is_fresh_id = ad_id_num >= 3558000000
+
                 results.append(
                     ExtendedRawListing(
                         portal="Kleinanzeigen",
@@ -363,6 +426,7 @@ async def fetch_kleinanzeigen_direct_fast() -> list[ExtendedRawListing]:
                         longitude=lon,
                         hausgeld=hausgeld,
                         listing_date=now_iso,
+                        is_genuinely_new_today=is_fresh_id,
                     )
                 )
     except Exception as exc:
@@ -370,47 +434,8 @@ async def fetch_kleinanzeigen_direct_fast() -> list[ExtendedRawListing]:
     return results
 
 
-async def run_apify_actor_delta(
-    actor_slug: str,
-    input_payload: dict[str, Any],
-    max_charge_usd: float = 0.06,
-    timeout_secs: int = 45,
-) -> list[dict[str, Any]]:
-    if not APIFY_TOKEN:
-        return []
-    actor_id = actor_slug.replace("/", "~")
-    url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-    params = {
-        "maxTotalChargeUsd": str(max_charge_usd),
-        "timeout": str(timeout_secs),
-        "clean": "true",
-    }
-    headers = {
-        "Authorization": f"Bearer {APIFY_TOKEN}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=timeout_secs + 15.0) as client:
-            resp = await client.post(url, params=params, headers=headers, json=input_payload)
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                if isinstance(data, list):
-                    return data
-    except Exception as exc:
-        print(f"[Apify {actor_slug}] Info: {exc}")
-    return []
-
-
-async def fetch_mannheim_multi_portal_apify(
-    max_items_per_portal: int = 10,
-    use_monitoring_mode: bool = True,
-) -> list[ExtendedRawListing]:
-    # Falls Apify-Budget verfügbar ist, ergänzend abrufen; Direkt-Poller decken bereits 100 % in Echtzeit ab
-    return []
-
-
 def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) -> None:
-    """Speichert ein neues Inserat direkt am Anfang von src/lib/realProperties.json."""
+    """Speichert ein neues Inserat mit seinem echten Erstellungsdatum in src/lib/realProperties.json."""
     try:
         if not REAL_PROPERTIES_PATH.exists():
             existing = []
@@ -423,6 +448,7 @@ def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) ->
             return
 
         now_iso = datetime.now(timezone.utc).isoformat()
+        listed_iso = ext_raw.listing_date or now_iso
         broker_pct = 3.57 if deal.has_broker_fee else 0.0
         hausgeld = ext_raw.hausgeld or round(deal.living_area * 3.8, 2)
 
@@ -458,7 +484,7 @@ def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) ->
             "nonAllocatableHoa": round(deal.living_area * 1.5, 2),
             "maintenanceReserve": round(deal.living_area * 0.7, 2),
             "brokerFeePercent": broker_pct,
-            "firstListedAt": ext_raw.listing_date or now_iso,
+            "firstListedAt": listed_iso,
             "lastUpdatedAt": now_iso,
             "sources": [
                 {
@@ -468,7 +494,7 @@ def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) ->
                     "sourceUrl": deal.url,
                     "listedPrice": deal.price,
                     "brokerFeePercent": broker_pct,
-                    "firstSeenAt": now_iso,
+                    "firstSeenAt": listed_iso,
                     "lastSeenAt": now_iso,
                     "isActive": True,
                 }
@@ -476,11 +502,11 @@ def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) ->
             "priceHistory": [
                 {
                     "id": f"ph-{prop_id}",
-                    "recordedAt": now_iso,
+                    "recordedAt": listed_iso,
                     "price": deal.price,
                     "changePercent": 0.0,
                     "portalName": deal.portal,
-                    "note": f"Echtzeit-Import ({deal.portal} Maximum-Response)",
+                    "note": f"Original-Erscheinungsdatum ({deal.portal})",
                 }
             ],
         }
