@@ -388,8 +388,26 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
   const [onlyPriceReduced, setOnlyPriceReduced] = useState<boolean>(false);
   const [minDaysOnline, setMinDaysOnline] = useState<number>(0);
   const [selectedState, setSelectedState] = useState<string>("ALLE");
+  const [selectedPortal, setSelectedPortal] = useState<string>("ALLE");
   const [onlyDuplicates, setOnlyDuplicates] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<SortKey>("liveNewest");
+
+  const portalCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      ImmoScout24: 0,
+      Immowelt: 0,
+      "Ohne-Makler": 0,
+      Kleinanzeigen: 0,
+    };
+    for (const p of allProperties) {
+      for (const s of p.sources) {
+        if (counts[s.portalName] !== undefined) {
+          counts[s.portalName] += 1;
+        }
+      }
+    }
+    return counts;
+  }, [allProperties]);
 
   // Ansichtsmodus: "split" (Split-View mit Karte) oder "table" (Vollbreite-Tabelle)
   const [viewMode, setViewMode] = useState<"split" | "table">("split");
@@ -428,6 +446,12 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
         if (selectedState !== "ALLE" && property.federalState !== selectedState) {
           return false;
         }
+        if (
+          selectedPortal !== "ALLE" &&
+          !property.sources.some((s) => s.portalName === selectedPortal)
+        ) {
+          return false;
+        }
         if (metrics.grossRentalYieldPercent < minYieldPercent) {
           return false;
         }
@@ -452,11 +476,11 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
         return true;
       })
       .sort((a, b) => {
-        const aIsLive = a.property.id.startsWith("live-");
-        const bIsLive = b.property.id.startsWith("live-");
         if (sortBy === "liveNewest") {
-          if (aIsLive !== bIsLive) return aIsLive ? -1 : 1;
-          return 0;
+          const tA = new Date(a.property.firstListedAt).getTime() || 0;
+          const tB = new Date(b.property.firstListedAt).getTime() || 0;
+          if (tB !== tA) return tB - tA;
+          return a.metrics.daysOnline - b.metrics.daysOnline;
         }
         switch (sortBy) {
           case "grossYieldDesc":
@@ -479,6 +503,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
     enrichedProperties,
     searchQuery,
     selectedState,
+    selectedPortal,
     minYieldPercent,
     maxPurchasePrice,
     onlyCashflowPositive,
@@ -498,6 +523,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
     setOnlyPriceReduced(false);
     setMinDaysOnline(0);
     setSelectedState("ALLE");
+    setSelectedPortal("ALLE");
     setOnlyDuplicates(false);
   };
 
@@ -893,6 +919,128 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
           </div>
         </div>
 
+        {/* 4 EINGEBAUTE PORTALE: LIVE-ÜBERSICHT & SCHNELLFILTER */}
+        <section className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-indigo-600" />
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                4 Integrierte Immobilienportale (15s Echtzeit-Takt):
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedPortal("ALLE")}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  selectedPortal === "ALLE"
+                    ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
+                    : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                <span>Alle 4 Portale</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedPortal === "ALLE"
+                      ? "bg-white/20 text-white"
+                      : "bg-slate-200 text-slate-700"
+                  }`}
+                >
+                  {allProperties.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPortal("ImmoScout24")}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  selectedPortal === "ImmoScout24"
+                    ? "border-cyan-600 bg-cyan-600 text-white shadow-sm"
+                    : "border-cyan-200 bg-cyan-50/70 text-cyan-800 hover:bg-cyan-100"
+                }`}
+              >
+                <span className="h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                <span>ImmoScout24</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedPortal === "ImmoScout24"
+                      ? "bg-white/20 text-white"
+                      : "bg-cyan-100 text-cyan-900"
+                  }`}
+                >
+                  {portalCounts["ImmoScout24"] ?? 0}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPortal("Immowelt")}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  selectedPortal === "Immowelt"
+                    ? "border-amber-500 bg-amber-500 text-white shadow-sm"
+                    : "border-amber-200 bg-amber-50/70 text-amber-800 hover:bg-amber-100"
+                }`}
+              >
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
+                <span>Immowelt</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedPortal === "Immowelt"
+                      ? "bg-white/20 text-white"
+                      : "bg-amber-100 text-amber-900"
+                  }`}
+                >
+                  {portalCounts["Immowelt"] ?? 0}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPortal("Ohne-Makler")}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  selectedPortal === "Ohne-Makler"
+                    ? "border-emerald-600 bg-emerald-600 text-white shadow-sm"
+                    : "border-emerald-200 bg-emerald-50/70 text-emerald-800 hover:bg-emerald-100"
+                }`}
+              >
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Ohne-Makler</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedPortal === "Ohne-Makler"
+                      ? "bg-white/20 text-white"
+                      : "bg-emerald-100 text-emerald-900"
+                  }`}
+                >
+                  {portalCounts["Ohne-Makler"] ?? 0}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPortal("Kleinanzeigen")}
+                className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold transition ${
+                  selectedPortal === "Kleinanzeigen"
+                    ? "border-lime-600 bg-lime-600 text-white shadow-sm"
+                    : "border-lime-200 bg-lime-50/70 text-lime-800 hover:bg-lime-100"
+                }`}
+              >
+                <span className="h-2 w-2 rounded-full bg-lime-500 animate-pulse" />
+                <span>eBay Kleinanzeigen</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                    selectedPortal === "Kleinanzeigen"
+                      ? "bg-white/20 text-white"
+                      : "bg-lime-100 text-lime-900"
+                  }`}
+                >
+                  {portalCounts["Kleinanzeigen"] ?? 0}
+                </span>
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* INVESTOR-FILTERLEISTE */}
         <section className="rounded-2xl border border-slate-200/90 bg-white p-5 space-y-4 shadow-sm">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
@@ -1199,14 +1347,28 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
 
                               {/* Portal-Badges & Dubletten-Hinweis */}
                               <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                                {property.sources.map((src) => (
-                                  <span
-                                    key={src.id}
-                                    className="inline-flex items-center rounded bg-slate-100 border border-slate-200/80 px-1.5 py-0.5 text-[10px] text-slate-600"
-                                  >
-                                    {src.portalName}
-                                  </span>
-                                ))}
+                                {property.sources.map((src) => {
+                                  const pName =
+                                    src.portalName === "Kleinanzeigen"
+                                      ? "eBay Kleinanzeigen"
+                                      : src.portalName;
+                                  const badgeStyle =
+                                    src.portalName === "ImmoScout24"
+                                      ? "bg-cyan-50 border-cyan-200 text-cyan-800 font-semibold"
+                                      : src.portalName === "Immowelt"
+                                      ? "bg-amber-50 border-amber-200 text-amber-800 font-semibold"
+                                      : src.portalName === "Ohne-Makler"
+                                      ? "bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold"
+                                      : "bg-lime-50 border-lime-200 text-lime-800 font-semibold";
+                                  return (
+                                    <span
+                                      key={src.id}
+                                      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] ${badgeStyle}`}
+                                    >
+                                      {pName}
+                                    </span>
+                                  );
+                                })}
                                 {metrics.maxPortalSpreadEUR > 0 && (
                                   <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
                                     <Sparkles className="h-2.5 w-2.5" />-
