@@ -1,5 +1,59 @@
 [
   {
+    "id": "live-Kleinanzeigen-3470681841",
+    "title": "Drei-Zimmer-Wohnung mit Garage",
+    "description": "12 | 55239 Gau-Odernheim | (32 km) | Drei-Zimmer-Wohnung mit Garage | Drei-Zimmer-Wohnung mit Garage\nRuhige Kapitalanlage im Zentrum\nDiese sehr gepflegte und vermietete... | 78 m² · 3 Zi. | 189.000 € | Volksbank Immobilien GmbH Alzey-Worms",
+    "propertyType": "ETW",
+    "address": "55239 Gau-Odernheim",
+    "zipCode": "55239",
+    "city": "Gau-Odernheim",
+    "district": "Metropolregion Rhein-Neckar",
+    "federalState": "Rheinland-Pfalz",
+    "latitude": 49.9,
+    "longitude": 7.6,
+    "livingAreaSqm": 78.0,
+    "rooms": 3.0,
+    "yearBuilt": 1985,
+    "floor": 2,
+    "energyClass": "C",
+    "condition": "Gepflegt",
+    "isRented": false,
+    "purchasePrice": 189000.0,
+    "initialPrice": 189000.0,
+    "estimatedRentCold": 819.0,
+    "currentRentCold": 819.0,
+    "estimatedMarketValue": 222300.0,
+    "hoaTotalMonthly": 296.4,
+    "nonAllocatableHoa": 117.0,
+    "maintenanceReserve": 54.6,
+    "brokerFeePercent": 3.57,
+    "firstListedAt": "2026-11-03T10:00:00+00:00",
+    "lastUpdatedAt": "2026-11-03T10:31:12.510805+00:00",
+    "sources": [
+      {
+        "id": "src-live-Kleinanzeigen-3470681841",
+        "portalName": "Kleinanzeigen",
+        "externalId": "3470681841",
+        "sourceUrl": "https://www.kleinanzeigen.de/s-anzeige/drei-zimmer-wohnung-mit-garage/3470681841-196-5069",
+        "listedPrice": 189000.0,
+        "brokerFeePercent": 3.57,
+        "firstSeenAt": "2026-11-03T10:00:00+00:00",
+        "lastSeenAt": "2026-11-03T10:31:12.510805+00:00",
+        "isActive": true
+      }
+    ],
+    "priceHistory": [
+      {
+        "id": "ph-live-Kleinanzeigen-3470681841",
+        "recordedAt": "2026-11-03T10:00:00+00:00",
+        "price": 189000.0,
+        "changePercent": 0.0,
+        "portalName": "Kleinanzeigen",
+        "note": "Original-Erscheinungsdatum (Kleinanzeigen)"
+      }
+    ]
+  },
+  {
     "id": "live-Kleinanzeigen-3534465540",
     "title": "ETW #3534465540",
     "description": "12 | TOP | 64665 Alsbach-Hähnlein | (24 km) | Erstbezug, sanierte DG-ETW mit Tiefgaragenstellplatz | Diese Dachgeschosswohnung im Erstbezug nach kompletter Sanierung präsentiert sich mit einer... | 46 m² · 1 Zi. | 129.000 € | VON POLL IMMOBILIEN Darmstadt - Torsten Böttcher",
