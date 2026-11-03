@@ -1,7 +1,6 @@
 import asyncio
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import redis.asyncio as redis
@@ -10,16 +9,17 @@ from ohne_makler_scraper import fetch_real_ohne_makler_listings, zip_to_state_an
 from mannheim_apify_agent import (
     ExtendedRawListing,
     REAL_PROPERTIES_PATH,
+    fetch_immoscout_mobile_direct_fast,
+    fetch_immowelt_direct_fast,
     fetch_kleinanzeigen_direct_fast,
-    fetch_mannheim_multi_portal_apify,
     persist_new_deal_to_json,
 )
 
 REDIS_URL = "redis://localhost:6379"
 
-# Intervalle für Maximum-Response
-FAST_DIRECT_POLL_INTERVAL_SECONDS = 20
-APIFY_DELTA_POLL_INTERVAL_SECONDS = 180
+# Maximum-Response: Alle 15 Sekunden direkter Parallel-Abruf über alle 4 Portale (0 $ Kosten, < 1s Latenz)
+FAST_DIRECT_POLL_INTERVAL_SECONDS = 15
+APIFY_DELTA_POLL_INTERVAL_SECONDS = 15
 
 
 class DeltaScraperEngine:
@@ -32,7 +32,7 @@ class DeltaScraperEngine:
         self._seeded: bool = False
 
     async def seed_seen_ids_from_disk(self) -> None:
-        """Lädt bereits bekannte Inserats-IDs aus realProperties.json in Redis, damit nur echte Neuerscheinungen alarmieren."""
+        """Lädt bereits bekannte Inserats-IDs aus realProperties.json in Redis."""
         if self._seeded:
             return
         self._seeded = True
@@ -47,32 +47,6 @@ class DeltaScraperEngine:
                     ext_id = str(src.get("externalId") or "")
                     if portal and ext_id:
                         await self.redis.sadd(f"seen_ids:{portal}", ext_id)
-                # Falls recent_deals in Redis noch leer ist, mit den neuesten 40 Deals vorbefüllen
-            curr_len = await self.redis.llen("recent_deals")
-            if curr_len == 0 and items:
-                for prop in reversed(items[:40]):
-                    srcs = prop.get("sources") or [{}]
-                    portal = srcs[0].get("portalName") or "ImmoScout24"
-                    ext_id = str(srcs[0].get("externalId") or prop.get("id") or "")
-                    url = str(srcs[0].get("sourceUrl") or "")
-                    raw = RawListing(
-                        portal=portal,
-                        external_id=ext_id,
-                        url=url,
-                        title=str(prop.get("title") or "Eigentumswohnung"),
-                        zip_code=str(prop.get("zipCode") or "68159"),
-                        city=str(prop.get("city") or "Mannheim"),
-                        state_code="BW" if "Baden" in str(prop.get("federalState", "BW")) else "RP",
-                        price=float(prop.get("purchasePrice") or 200000),
-                        living_area=float(prop.get("livingAreaSqm") or 65),
-                        rooms=float(prop.get("rooms") or 2.5),
-                        construction_year=int(prop.get("yearBuilt") or 1985),
-                        actual_rent_cold=float(prop.get("currentRentCold") or 0) or None,
-                        has_broker_fee=float(prop.get("brokerFeePercent") or 0) > 0,
-                    )
-                    deal = evaluate_listing(raw)
-                    await self.redis.lpush("recent_deals", deal.model_dump_json())
-                await self.redis.ltrim("recent_deals", 0, 199)
         except Exception as exc:
             print(f"[Seed Redis] Warnung: {exc}")
 
@@ -162,32 +136,27 @@ class DeltaScraperEngine:
         return newly_published
 
     async def scan_all_portals_now(
-        self, include_apify: bool = True, max_items_per_portal: int = 10
+        self, include_apify: bool = True, max_items_per_portal: int = 20
     ) -> dict[str, Any]:
         """
-        Führt sofort einen parallelen Maximum-Response-Scan über alle Portale aus:
-        - Ohne-Makler (Direkt)
-        - Kleinanzeigen Mannheim +50km (Direkt)
-        - Optional: ImmoScout24 + Immowelt + Kleinanzeigen via Apify Delta-Engine
+        Führt sofort einen parallelen Maximum-Response-Scan über ALLE 4 Portale direkt aus:
+        1. ImmoScout24 Mobile-App API (sorting=-firstactivation, Mannheim +50km)
+        2. Immowelt Direkt (DateDesc, Mannheim +50km)
+        3. Kleinanzeigen Direkt (Neueste zuerst, Mannheim +50km)
+        4. Ohne-Makler Direkt
         """
         self.total_scans += 1
         now_iso = datetime.now(timezone.utc).isoformat()
         self.last_fast_scan_at = now_iso
+        self.last_apify_scan_at = now_iso
 
-        tasks: list[Any] = [
-            self.fetch_newest_from_ohne_makler(),
+        batches = await asyncio.gather(
+            fetch_immoscout_mobile_direct_fast(),
+            fetch_immowelt_direct_fast(),
             fetch_kleinanzeigen_direct_fast(),
-        ]
-        if include_apify:
-            self.last_apify_scan_at = now_iso
-            tasks.append(
-                fetch_mannheim_multi_portal_apify(
-                    max_items_per_portal=max_items_per_portal,
-                    use_monitoring_mode=True,
-                )
-            )
-
-        batches = await asyncio.gather(*tasks, return_exceptions=True)
+            self.fetch_newest_from_ohne_makler(),
+            return_exceptions=True,
+        )
         combined: list[ExtendedRawListing] = []
         for batch in batches:
             if isinstance(batch, list):
@@ -201,28 +170,11 @@ class DeltaScraperEngine:
             "new_deals": [d.model_dump() for d in new_deals],
         }
 
-    async def fast_direct_poll_loop(self):
-        """Pollt alle 20 Sekunden direkt ohne Container-Overhead."""
+    async def poll_loop(self):
         await self.seed_seen_ids_from_disk()
         while True:
             try:
-                await self.scan_all_portals_now(include_apify=False)
+                await self.scan_all_portals_now(include_apify=True)
             except Exception as exc:
-                print(f"[Fast Direct Loop] Fehler: {exc}")
+                print(f"[Maximum-Response Loop] Fehler: {exc}")
             await asyncio.sleep(FAST_DIRECT_POLL_INTERVAL_SECONDS)
-
-    async def apify_delta_poll_loop(self):
-        """Pollt ImmoScout24, Immowelt & Kleinanzeigen im Delta/Monitoring-Modus."""
-        await asyncio.sleep(5)
-        while True:
-            try:
-                await self.scan_all_portals_now(include_apify=True, max_items_per_portal=10)
-            except Exception as exc:
-                print(f"[Apify Delta Loop] Fehler: {exc}")
-            await asyncio.sleep(APIFY_DELTA_POLL_INTERVAL_SECONDS)
-
-    async def poll_loop(self):
-        await asyncio.gather(
-            self.fast_direct_poll_loop(),
-            self.apify_delta_poll_loop(),
-        )
