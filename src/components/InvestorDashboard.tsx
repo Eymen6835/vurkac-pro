@@ -191,24 +191,123 @@ type SortKey =
 export function InvestorDashboard({ initialProperties }: InvestorDashboardProps) {
   const [liveDeals, setLiveDeals] = useState<PropertyDTO[]>([]);
   const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [alertsEnabled, setAlertsEnabled] = useState<boolean>(true);
+  const [isScanningNow, setIsScanningNow] = useState<boolean>(false);
+  const [latestToastDeal, setLatestToastDeal] = useState<PropertyDTO | null>(null);
+  const [lastScanText, setLastScanText] = useState<string>("20s Takt aktiv");
 
-  // Echtzeit-Anbindung an FastAPI (/api/deals/recent + WebSocket /ws/live-deals)
+  const playAlertChime = () => {
+    if (!alertsEnabled || typeof window === "undefined") return;
+    try {
+      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0.14, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.45);
+    } catch {
+      // Audio-Kontext noch nicht entsperrt
+    }
+  };
+
+  const triggerDesktopAndToastAlert = (dto: PropertyDTO) => {
+    setLatestToastDeal(dto);
+    playAlertChime();
+    if (
+      alertsEnabled &&
+      typeof window !== "undefined" &&
+      "Notification" in window &&
+      Notification.permission === "granted"
+    ) {
+      const src = dto.sources[0]?.portalName ?? "Live-Portal";
+      const n = new Notification(`⚡ Neues Inserat auf ${src}: ${dto.city}`, {
+        body: `${dto.title} · ${formatEUR(dto.purchasePrice)} · ${dto.livingAreaSqm} m²`,
+        icon: "vurkac-logo.jpg",
+      });
+      n.onclick = () => {
+        window.focus();
+        setSelectedPropertyId(dto.id);
+      };
+    }
+  };
+
+  const togglePushNotifications = async () => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        await Notification.requestPermission();
+      }
+    }
+    setAlertsEnabled((prev) => !prev);
+  };
+
+  const triggerManualMultiPortalScan = async () => {
+    if (isScanningNow) return;
+    setIsScanningNow(true);
+    setLastScanText("Scanne IS24 · IW · KA...");
+    try {
+      const res = await fetch(
+        "http://localhost:8000/api/mannheim/scan-now?include_apify=true&max_items=10",
+        { method: "POST" }
+      );
+      if (res.ok) {
+        const result = await res.json();
+        const newCount = result.new_deals_count ?? 0;
+        setLastScanText(
+          newCount > 0 ? `+${newCount} neu gefunden!` : `Aktuell (${new Date().toLocaleTimeString("de-DE")})`
+        );
+      } else {
+        setLastScanText("Scan fertig");
+      }
+    } catch {
+      setLastScanText("20s Direkt-Takt");
+    } finally {
+      setIsScanningNow(false);
+    }
+  };
+
+  // Echtzeit-Anbindung an FastAPI (/api/deals/recent + WebSocket /ws/live-deals + 10s Fast-Poll-Fallback)
   useEffect(() => {
     let isMounted = true;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const knownLiveIds = new Set<string>(initialProperties.map((p) => p.id));
+
+    const fetchRecent = (isInitial: boolean) => {
+      fetch("http://localhost:8000/api/deals/recent")
+        .then((res) => (res.ok ? res.json() : []))
+        .then((data: RealtimeEnrichedDeal[]) => {
+          if (!isMounted || !Array.isArray(data)) return;
+          const mapped = data.slice(0, 120).map(mapLiveDealToPropertyDTO);
+          if (!isInitial) {
+            for (const dto of mapped) {
+              if (!knownLiveIds.has(dto.id)) {
+                knownLiveIds.add(dto.id);
+                triggerDesktopAndToastAlert(dto);
+                break;
+              }
+            }
+          } else {
+            mapped.forEach((d) => knownLiveIds.add(d.id));
+          }
+          setLiveDeals(mapped);
+        })
+        .catch(() => {});
+    };
 
     // 1. Initiale letzte Deals aus Redis abrufen
-    fetch("http://localhost:8000/api/deals/recent")
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data: RealtimeEnrichedDeal[]) => {
-        if (!isMounted || !Array.isArray(data)) return;
-        const mapped = data.slice(0, 100).map(mapLiveDealToPropertyDTO);
-        setLiveDeals(mapped);
-      })
-      .catch(() => {});
+    fetchRecent(true);
 
-    // 2. WebSocket-Verbindung zu /ws/live-deals aufbauen
+    // 2. 10-Sekunden Ultra-Fast Polling Fallback (falls Browser-Tab im Hintergrund WS drosselt)
+    const pollInterval = setInterval(() => fetchRecent(false), 10000);
+
+    // 3. WebSocket-Verbindung zu /ws/live-deals aufbauen (Sofort-Push < 10ms)
     const connectWs = () => {
       try {
         ws = new WebSocket("ws://localhost:8000/ws/live-deals");
@@ -220,10 +319,15 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
           try {
             const deal: RealtimeEnrichedDeal = JSON.parse(event.data);
             const dto = mapLiveDealToPropertyDTO(deal);
+            const isNew = !knownLiveIds.has(dto.id);
+            knownLiveIds.add(dto.id);
             setLiveDeals((prev) => [
               dto,
               ...prev.filter((item) => item.id !== dto.id),
             ]);
+            if (isNew) {
+              triggerDesktopAndToastAlert(dto);
+            }
           } catch (err) {
             console.error("Fehler beim Parsen des Live-Deals:", err);
           }
@@ -231,7 +335,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
         ws.onclose = () => {
           if (isMounted) {
             setWsConnected(false);
-            reconnectTimer = setTimeout(connectWs, 3000);
+            reconnectTimer = setTimeout(connectWs, 2000);
           }
         };
         ws.onerror = () => {
@@ -240,7 +344,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
       } catch {
         if (isMounted) {
           setWsConnected(false);
-          reconnectTimer = setTimeout(connectWs, 3000);
+          reconnectTimer = setTimeout(connectWs, 2000);
         }
       }
     };
@@ -249,6 +353,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
 
     return () => {
       isMounted = false;
+      clearInterval(pollInterval);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
@@ -434,6 +539,58 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
 
   return (
     <div className="min-h-screen bg-[#f8fafc] text-slate-800">
+      {/* Live-Echtzeit-Toast für neue Inserate */}
+      {latestToastDeal && (
+        <div className="fixed bottom-5 right-5 z-50 max-w-md rounded-2xl border-2 border-indigo-500 bg-white p-4 shadow-2xl ring-4 ring-indigo-500/15">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                  ⚡ NEUES INSERAT ({latestToastDeal.sources[0]?.portalName ?? "LIVE"})
+                </span>
+                <span className="text-xs font-semibold text-slate-600">
+                  {latestToastDeal.zipCode} {latestToastDeal.city}
+                </span>
+              </div>
+              <p className="mt-1 text-sm font-bold text-slate-900 line-clamp-1">
+                {latestToastDeal.title}
+              </p>
+              <p className="mt-0.5 text-xs text-slate-600">
+                Kaufpreis: <strong>{formatEUR(latestToastDeal.purchasePrice)}</strong> ·{" "}
+                {latestToastDeal.livingAreaSqm} m² · {latestToastDeal.rooms} Zi.
+              </p>
+              <div className="mt-2.5 flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setSelectedPropertyId(latestToastDeal.id);
+                    setLatestToastDeal(null);
+                  }}
+                  className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700"
+                >
+                  Details öffnen
+                </button>
+                {latestToastDeal.sources[0]?.sourceUrl && (
+                  <a
+                    href={latestToastDeal.sources[0].sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    Direkt zum Portal ↗
+                  </a>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => setLatestToastDeal(null)}
+              className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 text-xs font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Navbar */}
       <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-white/95 backdrop-blur-md shadow-sm">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4 px-4 py-4 sm:px-6">
@@ -451,28 +608,50 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
                   VurKac<span className="text-indigo-600"> Pro</span>
                 </span>
                 <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-indigo-700 border border-indigo-200/80">
-                  Meta-Search & Deal-Analyzer
+                  Mannheim +50 km · Maximum-Response
                 </span>
                 <span
                   className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200"
                 >
                   <Radio className="h-3 w-3 animate-pulse" />
                   {wsConnected
-                    ? `LIVE-WS AKTIV (${allProperties.length} Inserate)`
-                    : `OHNE-MAKLER LIVE (${allProperties.length} Inserate)`}
+                    ? `MAX-RESPONSE AKTIV (${allProperties.length} Inserate · ${lastScanText})`
+                    : `MULTI-PORTAL AKTIV (${allProperties.length} Inserate)`}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Aggregierte Immobilien-Metasuche · Dubletten-Erkennung · Echtzeit-Cashflow-Engine
+                ImmoScout24 · Immowelt · Kleinanzeigen · Ohne-Makler · Sofort-Push für alle Neuerscheinungen
               </p>
             </div>
           </div>
 
-          {/* Global Financing Assumptions Pill + View Toggle */}
-          <div className="flex flex-wrap items-center gap-2.5">
+          {/* Global Financing Assumptions Pill + Maximum Response Controls + View Toggle */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={triggerManualMultiPortalScan}
+              disabled={isScanningNow}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-60 transition"
+              title="Startet sofort einen parallelen Delta-Scan auf ImmoScout24, Immowelt, Kleinanzeigen & Ohne-Makler"
+            >
+              <Sparkles className={`h-3.5 w-3.5 ${isScanningNow ? "animate-spin" : ""}`} />
+              {isScanningNow ? "Scanne alle Portale..." : "⚡ Live-Scan (IS24 · IW · KA)"}
+            </button>
+
+            <button
+              onClick={togglePushNotifications}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                alertsEnabled
+                  ? "border-amber-300 bg-amber-50 text-amber-800"
+                  : "border-slate-200 bg-white text-slate-600"
+              }`}
+              title="Desktop-Benachrichtigung & Ton bei jedem neuen Inserat"
+            >
+              <span>{alertsEnabled ? "🔔 Sofort-Alarm: EIN" : "🔕 Alarm: AUS"}</span>
+            </button>
+
             <button
               onClick={() => setShowFinancingBar((prev) => !prev)}
-              className={`inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-medium transition ${
+              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium transition ${
                 showFinancingBar
                   ? "border-indigo-300 bg-indigo-50 text-indigo-900"
                   : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
@@ -480,9 +659,8 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
             >
               <SlidersHorizontal className="h-3.5 w-3.5 text-indigo-600" />
               <span>
-                Finanzierungsprofil: {financingParams.equityPercent}% EK ·{" "}
-                {formatPercent(financingParams.interestRatePercent, 1)} Zins ·{" "}
-                {formatPercent(financingParams.repaymentRatePercent, 1)} Tilgung
+                {financingParams.equityPercent}% EK ·{" "}
+                {formatPercent(financingParams.interestRatePercent, 1)} Zins
               </span>
             </button>
 
@@ -491,7 +669,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
               className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100/80 transition"
             >
               <Flame className="h-3.5 w-3.5 text-emerald-600" />
-              Top-Deals (&gt;6% &amp; &gt;15% u. MW)
+              Top-Deals (&gt;6%)
             </button>
 
             {/* View Switcher */}
