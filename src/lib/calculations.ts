@@ -178,7 +178,8 @@ export function calculatePropertyMetrics(
 
   // 3. Brutto- & Nettomietrendite
   const annualRentCold = monthlyRentCold * 12;
-  const grossRentalYieldPercent = (annualRentCold / purchasePrice) * 100;
+  const grossRentalYieldPercent =
+    purchasePrice > 0 ? (annualRentCold / purchasePrice) * 100 : 0;
   const factor = annualRentCold > 0 ? purchasePrice / annualRentCold : 0;
 
   // Bewirtschaftungskosten (nicht umlegbares Hausgeld inkl. WEG-Rücklage + eigene Zusatzrücklage)
@@ -188,11 +189,14 @@ export function calculatePropertyMetrics(
   const monthlyOperatingCostsEUR =
     monthlyNonAllocatableCostsEUR + monthlyAdditionalMaintenanceEUR;
   const annualNetColdRent = annualRentCold - monthlyOperatingCostsEUR * 12;
-  const netRentalYieldPercent = (annualNetColdRent / totalInvestmentEUR) * 100;
+  const netRentalYieldPercent =
+    totalInvestmentEUR > 0 ? (annualNetColdRent / totalInvestmentEUR) * 100 : 0;
 
   // 4. Marktwert-Abweichung
   const marketValueDiffPercent =
-    ((purchasePrice - property.estimatedMarketValue) / property.estimatedMarketValue) * 100;
+    property.estimatedMarketValue > 0
+      ? ((purchasePrice - property.estimatedMarketValue) / property.estimatedMarketValue) * 100
+      : 0;
   const belowMarketValuePercent = -marketValueDiffPercent; // z.B. +21.5 % unter Marktwert
   const belowMarketValueEUR = property.estimatedMarketValue - purchasePrice;
 

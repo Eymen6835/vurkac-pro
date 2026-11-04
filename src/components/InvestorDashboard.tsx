@@ -423,10 +423,14 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
 
   // Dynamische Kalkulation für jedes Inserat
   const enrichedProperties = useMemo(() => {
-    return allProperties.map((property) => ({
-      property,
-      metrics: calculatePropertyMetrics(property, financingParams),
-    }));
+    // Inserate ohne gültigen Kaufpreis (z. B. "Preis auf Anfrage" → 0 €) oder Wohnfläche
+    // lassen sich nicht kalkulieren und würden Renditen/KPIs auf Infinity/NaN ziehen.
+    return allProperties
+      .filter((property) => property.purchasePrice > 0 && property.livingAreaSqm > 0)
+      .map((property) => ({
+        property,
+        metrics: calculatePropertyMetrics(property, financingParams),
+      }));
   }, [allProperties, financingParams]);
 
   // Filterung & Sortierung
