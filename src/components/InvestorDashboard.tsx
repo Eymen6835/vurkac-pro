@@ -188,7 +188,18 @@ type SortKey =
   | "belowMarketDesc"
   | "priceDropDesc"
   | "priceAsc"
-  | "daysOnlineDesc";
+  | "daysOnlineDesc"
+  | "cityAsc";
+
+// Schreibvarianten derselben Stadt aus unterschiedlichen Portalen zusammenführen
+const CITY_ALIASES: Record<string, string> = {
+  Ludwigshafen: "Ludwigshafen am Rhein",
+};
+
+function normalizeCity(city: string): string {
+  const trimmed = (city ?? "").trim();
+  return CITY_ALIASES[trimmed] ?? trimmed;
+}
 
 export function InvestorDashboard({ initialProperties }: InvestorDashboardProps) {
   const [liveDeals, setLiveDeals] = useState<PropertyDTO[]>([]);
@@ -388,6 +399,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
   const [onlyPriceReduced, setOnlyPriceReduced] = useState<boolean>(false);
   const [minDaysOnline, setMinDaysOnline] = useState<number>(0);
   const [selectedState, setSelectedState] = useState<string>("ALLE");
+  const [selectedCity, setSelectedCity] = useState<string>("ALLE");
   const [selectedPortal, setSelectedPortal] = useState<string>("ALLE");
   const [onlyDuplicates, setOnlyDuplicates] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<SortKey>("liveNewest");
@@ -433,6 +445,20 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
       }));
   }, [allProperties, financingParams]);
 
+  // Verfügbare Städte (im gewählten Bundesland) mit Anzahl Inserate, alphabetisch
+  const cityOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const { property } of enrichedProperties) {
+      if (selectedState !== "ALLE" && property.federalState !== selectedState) continue;
+      const city = normalizeCity(property.city);
+      if (!city) continue;
+      counts.set(city, (counts.get(city) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([city, count]) => ({ city, count }))
+      .sort((a, b) => a.city.localeCompare(b.city, "de"));
+  }, [enrichedProperties, selectedState]);
+
   // Filterung & Sortierung
   const filteredProperties = useMemo(() => {
     return enrichedProperties
@@ -448,6 +474,9 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
           if (!match) return false;
         }
         if (selectedState !== "ALLE" && property.federalState !== selectedState) {
+          return false;
+        }
+        if (selectedCity !== "ALLE" && normalizeCity(property.city) !== selectedCity) {
           return false;
         }
         if (
@@ -499,6 +528,18 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
             return a.property.purchasePrice - b.property.purchasePrice;
           case "daysOnlineDesc":
             return b.metrics.daysOnline - a.metrics.daysOnline;
+          case "cityAsc": {
+            const byCity = normalizeCity(a.property.city).localeCompare(
+              normalizeCity(b.property.city),
+              "de"
+            );
+            if (byCity !== 0) return byCity;
+            // Innerhalb einer Stadt: neueste Inserate zuerst
+            return (
+              (new Date(b.property.firstListedAt).getTime() || 0) -
+              (new Date(a.property.firstListedAt).getTime() || 0)
+            );
+          }
           default:
             return 0;
         }
@@ -507,6 +548,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
     enrichedProperties,
     searchQuery,
     selectedState,
+    selectedCity,
     selectedPortal,
     minYieldPercent,
     maxPurchasePrice,
@@ -527,6 +569,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
     setOnlyPriceReduced(false);
     setMinDaysOnline(0);
     setSelectedState("ALLE");
+    setSelectedCity("ALLE");
     setSelectedPortal("ALLE");
     setOnlyDuplicates(false);
   };
@@ -1233,12 +1276,30 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
               <span className="text-slate-500 font-medium">Bundesland:</span>
               <select
                 value={selectedState}
-                onChange={(e) => setSelectedState(e.target.value)}
+                onChange={(e) => {
+                  setSelectedState(e.target.value);
+                  // Gewählte Stadt passt evtl. nicht mehr zum neuen Bundesland
+                  setSelectedCity("ALLE");
+                }}
                 className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
               >
                 {federalStates.map((st) => (
                   <option key={st} value={st}>
                     {st === "ALLE" ? "Alle Bundesländer" : st}
+                  </option>
+                ))}
+              </select>
+
+              <span className="ml-2 text-slate-500 font-medium">Stadt:</span>
+              <select
+                value={selectedCity}
+                onChange={(e) => setSelectedCity(e.target.value)}
+                className="max-w-[14rem] rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="ALLE">Alle Städte ({cityOptions.length})</option>
+                {cityOptions.map(({ city, count }) => (
+                  <option key={city} value={city}>
+                    {city} ({count})
                   </option>
                 ))}
               </select>
@@ -1259,6 +1320,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
                 <option value="priceDropDesc">Größte Preissenkung (%)</option>
                 <option value="daysOnlineDesc">Längste Vermarktungsdauer (Tage)</option>
                 <option value="priceAsc">Niedrigster Kaufpreis (€)</option>
+                <option value="cityAsc">Stadt (A–Z)</option>
               </select>
             </div>
 
