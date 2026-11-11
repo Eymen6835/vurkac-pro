@@ -30,6 +30,7 @@ import {
   ChevronRight,
   Flame,
   Radio,
+  ExternalLink,
 } from "lucide-react";
 
 interface InvestorDashboardProps {
@@ -1426,13 +1427,29 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
                                       : src.portalName === "Ohne-Makler"
                                       ? "bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold"
                                       : "bg-lime-50 border-lime-200 text-lime-800 font-semibold";
+                                  const badgeClass = `inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] ${badgeStyle}`;
+                                  if (!src.sourceUrl) {
+                                    return (
+                                      <span key={src.id} className={badgeClass}>
+                                        {pName}
+                                      </span>
+                                    );
+                                  }
+                                  // Badge öffnet das Original-Inserat im neuen Tab,
+                                  // ohne zusätzlich den Detail-Drawer der Zeile zu öffnen
                                   return (
-                                    <span
+                                    <a
                                       key={src.id}
-                                      className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] ${badgeStyle}`}
+                                      href={src.sourceUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      title={`Inserat auf ${pName} öffnen`}
+                                      className={`${badgeClass} gap-1 hover:underline hover:brightness-95`}
                                     >
                                       {pName}
-                                    </span>
+                                      <ExternalLink className="h-2.5 w-2.5" />
+                                    </a>
                                   );
                                 })}
                                 {metrics.maxPortalSpreadEUR > 0 && (
