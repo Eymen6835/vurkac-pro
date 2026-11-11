@@ -7,17 +7,16 @@ import {
   PropertyDTO,
   calculatePropertyMetrics,
 } from "@/lib/calculations";
-import { formatEUR, formatPercent, formatNumber } from "@/lib/utils";
+import { formatEUR, formatPercent } from "@/lib/utils";
+import { normalizeCity } from "@/lib/city";
 import { GermanyDealMap } from "./GermanyDealMap";
 import { PropertyDetailDrawer } from "./PropertyDetailDrawer";
+import { ResultsTable } from "./ResultsTable";
 import {
   Search,
   SlidersHorizontal,
-  TrendingDown,
-  TrendingUp,
   Building2,
   Layers,
-  Clock,
   Sparkles,
   Check,
   RotateCcw,
@@ -27,10 +26,8 @@ import {
   Percent,
   Wallet,
   BadgeEuro,
-  ChevronRight,
   Flame,
   Radio,
-  ExternalLink,
 } from "lucide-react";
 
 interface InvestorDashboardProps {
@@ -144,7 +141,8 @@ function mapLiveDealToPropertyDTO(deal: RealtimeEnrichedDeal): PropertyDTO {
     floor: 2,
     energyClass: "C",
     condition: "Gepflegt",
-    isRented: true,
+    // Nur mit echter Ist-Miete aus dem Inserat gilt die Wohnung als vermietet
+    isRented: deal.actual_rent_cold != null && deal.actual_rent_cold > 0,
     purchasePrice: deal.price,
     initialPrice: deal.price,
     estimatedRentCold: deal.estimated_rent_cold,
@@ -191,16 +189,6 @@ type SortKey =
   | "priceAsc"
   | "daysOnlineDesc"
   | "cityAsc";
-
-// Schreibvarianten derselben Stadt aus unterschiedlichen Portalen zusammenführen
-const CITY_ALIASES: Record<string, string> = {
-  Ludwigshafen: "Ludwigshafen am Rhein",
-};
-
-function normalizeCity(city: string): string {
-  const trimmed = (city ?? "").trim();
-  return CITY_ALIASES[trimmed] ?? trimmed;
-}
 
 export function InvestorDashboard({ initialProperties }: InvestorDashboardProps) {
   const [liveDeals, setLiveDeals] = useState<PropertyDTO[]>([]);
@@ -423,7 +411,7 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
   }, [allProperties]);
 
   // Ansichtsmodus: "split" (Split-View mit Karte) oder "table" (Vollbreite-Tabelle)
-  const [viewMode, setViewMode] = useState<"split" | "table">("split");
+  const [viewMode, setViewMode] = useState<"split" | "table">("table");
 
   // Aktuell geöffnetes Objekt im Detail-Drawer
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
@@ -560,6 +548,16 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
     onlyDuplicates,
     sortBy,
   ]);
+
+  // Überschrift der Ergebnis-Tabelle: "… Wohnungen in Mannheim gefunden"
+  const scopeLabel =
+    selectedCity !== "ALLE"
+      ? `in ${selectedCity}`
+      : selectedState !== "ALLE"
+      ? `in ${selectedState}`
+      : searchQuery.trim()
+      ? `für „${searchQuery.trim()}“`
+      : "";
 
   const resetFilters = () => {
     setSearchQuery("");
@@ -1343,260 +1341,16 @@ export function InvestorDashboard({ initialProperties }: InvestorDashboardProps)
               : "block"
           }
         >
-          {/* Linke/Haupt-Spalte: Objekt-Tabelle */}
-          <div
-            className={
-              viewMode === "split" ? "xl:col-span-8 overflow-hidden" : "w-full"
-            }
-          >
-            <div className="overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-sm">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50/90 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                      <th className="py-3.5 pl-4 pr-3">Objekt &amp; Portale</th>
-                      <th className="px-3 py-3.5 text-right">Kaufpreis &amp; m²</th>
-                      <th className="px-3 py-3.5 text-right">Rendite (Brutto/Netto)</th>
-                      <th className="px-3 py-3.5 text-right">Marktwert-Diff.</th>
-                      <th className="px-3 py-3.5 text-right">Cashflow (v. / n. St.)</th>
-                      <th className="px-3 py-3.5 text-right">Historie &amp; Dauer</th>
-                      <th className="py-3.5 pl-2 pr-4 text-right">Analyse</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {filteredProperties.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={7}
-                          className="py-12 text-center text-sm text-slate-500"
-                        >
-                          Keine Immobilien entsprechen den aktuellen Filterkriterien. Klicke
-                          auf &ldquo;Alle Filter zurücksetzen&rdquo;.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredProperties.map(({ property, metrics }) => {
-                        const isHighYield = metrics.grossRentalYieldPercent >= 6.0;
-                        const isDeepBelowMarket =
-                          metrics.belowMarketValuePercent >= 15.0;
-                        const isLiveDeal = property.id.startsWith("live-");
-
-                        return (
-                          <tr
-                            key={property.id}
-                            onClick={() => setSelectedPropertyId(property.id)}
-                            className={`group cursor-pointer transition hover:bg-slate-50/90 ${
-                              selectedPropertyId === property.id
-                                ? "bg-indigo-50/60"
-                                : ""
-                            }`}
-                          >
-                            {/* 1. Objekt & Portale */}
-                            <td className="py-4 pl-4 pr-3 max-w-[310px]">
-                              <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                                {isLiveDeal && (
-                                  <span className="inline-flex items-center gap-1 rounded bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700">
-                                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping" />
-                                    LIVE
-                                  </span>
-                                )}
-                                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
-                                  {property.city} · {property.district}
-                                </span>
-                                <span className="text-[10px] text-slate-500">
-                                  {property.livingAreaSqm} m² · {property.rooms} Zi. · Bj.{" "}
-                                  {property.yearBuilt}
-                                </span>
-                              </div>
-                              <div className="font-semibold text-slate-800 group-hover:text-indigo-600 transition line-clamp-1">
-                                {property.title}
-                              </div>
-
-                              {/* Portal-Badges & Dubletten-Hinweis */}
-                              <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                                {property.sources.map((src) => {
-                                  const pName =
-                                    src.portalName === "Kleinanzeigen"
-                                      ? "eBay Kleinanzeigen"
-                                      : src.portalName;
-                                  const badgeStyle =
-                                    src.portalName === "ImmoScout24"
-                                      ? "bg-cyan-50 border-cyan-200 text-cyan-800 font-semibold"
-                                      : src.portalName === "Immowelt"
-                                      ? "bg-amber-50 border-amber-200 text-amber-800 font-semibold"
-                                      : src.portalName === "Ohne-Makler"
-                                      ? "bg-emerald-50 border-emerald-200 text-emerald-800 font-semibold"
-                                      : "bg-lime-50 border-lime-200 text-lime-800 font-semibold";
-                                  const badgeClass = `inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] ${badgeStyle}`;
-                                  if (!src.sourceUrl) {
-                                    return (
-                                      <span key={src.id} className={badgeClass}>
-                                        {pName}
-                                      </span>
-                                    );
-                                  }
-                                  // Badge öffnet das Original-Inserat im neuen Tab,
-                                  // ohne zusätzlich den Detail-Drawer der Zeile zu öffnen
-                                  return (
-                                    <a
-                                      key={src.id}
-                                      href={src.sourceUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      title={`Inserat auf ${pName} öffnen`}
-                                      className={`${badgeClass} gap-1 hover:underline hover:brightness-95`}
-                                    >
-                                      {pName}
-                                      <ExternalLink className="h-2.5 w-2.5" />
-                                    </a>
-                                  );
-                                })}
-                                {metrics.maxPortalSpreadEUR > 0 && (
-                                  <span className="inline-flex items-center gap-0.5 rounded bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-700">
-                                    <Sparkles className="h-2.5 w-2.5" />-
-                                    {formatEUR(metrics.maxPortalSpreadEUR)} Dublette
-                                  </span>
-                                )}
-                                {property.brokerFeePercent === 0 && (
-                                  <span className="inline-flex items-center rounded bg-emerald-50 border border-emerald-200/80 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
-                                    0% Provision
-                                  </span>
-                                )}
-                              </div>
-                            </td>
-
-                            {/* 2. Kaufpreis & m² */}
-                            <td className="px-3 py-4 text-right whitespace-nowrap">
-                              <div className="font-bold text-slate-900 text-sm">
-                                {formatEUR(property.purchasePrice)}
-                              </div>
-                              <div className="text-[11px] text-slate-500">
-                                {formatEUR(metrics.pricePerSqm)}/m²
-                              </div>
-                              <div className="text-[10px] text-slate-400">
-                                Miete: {formatEUR(property.estimatedRentCold)} (
-                                {formatEUR(metrics.rentPerSqm, 1)}/m²)
-                              </div>
-                            </td>
-
-                            {/* 3. Brutto & Nettomietrendite */}
-                            <td className="px-3 py-4 text-right whitespace-nowrap">
-                              <div className="inline-flex flex-col items-end">
-                                <span
-                                  className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-bold ${
-                                    isHighYield
-                                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                                      : metrics.grossRentalYieldPercent >= 5.0
-                                      ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
-                                      : "bg-slate-100 text-slate-700"
-                                  }`}
-                                >
-                                  {isHighYield && <TrendingUp className="h-3 w-3" />}
-                                  {formatPercent(metrics.grossRentalYieldPercent, 2)}
-                                </span>
-                                <span className="mt-1 text-[11px] text-slate-500">
-                                  Netto: {formatPercent(metrics.netRentalYieldPercent, 2)}
-                                </span>
-                                <span className="text-[10px] text-slate-400">
-                                  Faktor {formatNumber(metrics.factor, 1)}x
-                                </span>
-                              </div>
-                            </td>
-
-                            {/* 4. Marktwert-Abweichung */}
-                            <td className="px-3 py-4 text-right whitespace-nowrap">
-                              <div className="inline-flex flex-col items-end">
-                                <span
-                                  className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-bold ${
-                                    isDeepBelowMarket
-                                      ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                                      : metrics.belowMarketValuePercent >= 10
-                                      ? "bg-amber-50 text-amber-700 border border-amber-200"
-                                      : "bg-slate-100 text-slate-700"
-                                  }`}
-                                >
-                                  -{formatPercent(metrics.belowMarketValuePercent, 1)} u. MW
-                                </span>
-                                <span className="mt-1 text-[11px] text-slate-500">
-                                  MW: {formatEUR(property.estimatedMarketValue)}
-                                </span>
-                                <span className="text-[10px] text-emerald-600 font-medium">
-                                  +{formatEUR(metrics.belowMarketValueEUR)} Equity
-                                </span>
-                              </div>
-                            </td>
-
-                            {/* 5. Monatlicher Cashflow vor / nach Steuern */}
-                            <td className="px-3 py-4 text-right whitespace-nowrap">
-                              <div
-                                className={`font-bold text-sm ${
-                                  metrics.monthlyCashflowBeforeTax >= 0
-                                    ? "text-emerald-600"
-                                    : "text-rose-600"
-                                }`}
-                              >
-                                {metrics.monthlyCashflowBeforeTax >= 0 ? "+" : ""}
-                                {formatEUR(metrics.monthlyCashflowBeforeTax)} / Mo.
-                              </div>
-                              <div className="text-[11px] text-slate-500">
-                                n. St.:{" "}
-                                <span
-                                  className={
-                                    metrics.monthlyCashflowAfterTax >= 0
-                                      ? "text-emerald-700 font-semibold"
-                                      : "text-rose-600 font-medium"
-                                  }
-                                >
-                                  {metrics.monthlyCashflowAfterTax >= 0 ? "+" : ""}
-                                  {formatEUR(metrics.monthlyCashflowAfterTax)}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-slate-400">
-                                EK-Rendite: {formatPercent(metrics.returnOnEquityPercent, 1)}
-                              </div>
-                            </td>
-
-                            {/* 6. Preishistorie & Vermarktungsdauer */}
-                            <td className="px-3 py-4 text-right whitespace-nowrap">
-                              {metrics.priceReduced ? (
-                                <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
-                                  <TrendingDown className="h-3 w-3 text-emerald-600" />-
-                                  {formatPercent(metrics.totalPriceDropPercent, 1)} (
-                                  -{Math.round(metrics.totalPriceDropEUR / 1000)}k €)
-                                </span>
-                              ) : (
-                                <span className="text-[11px] text-slate-400">
-                                  Unverändert
-                                </span>
-                              )}
-                              <div className="mt-1 flex items-center justify-end gap-1 text-[11px] text-slate-500">
-                                <Clock className="h-3 w-3 text-slate-400" />
-                                {metrics.daysOnline} Tage online
-                              </div>
-                            </td>
-
-                            {/* 7. Detail-Drawer öffnen */}
-                            <td className="py-4 pl-2 pr-4 text-right whitespace-nowrap">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedPropertyId(property.id);
-                                }}
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-700 group-hover:border-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition"
-                              >
-                                Rechner
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+          {/* Linke/Haupt-Spalte: Ergebnis-Tabelle */}
+          <div className={viewMode === "split" ? "xl:col-span-8 min-w-0" : "w-full"}>
+            <ResultsTable
+              items={filteredProperties}
+              scopeLabel={scopeLabel}
+              selectedId={selectedPropertyId}
+              onSelect={(id) => setSelectedPropertyId(id)}
+              onShowStats={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+              externalSortKey={sortBy}
+            />
           </div>
 
           {/* Rechte Spalte im Split-View: Interaktive Deutschland-Karte */}
