@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -18,6 +19,31 @@ load_dotenv(ROOT_DIR / ".env")
 
 APIFY_TOKEN = os.getenv("APIFY_TOKEN", "")
 REAL_PROPERTIES_PATH = ROOT_DIR / "src" / "lib" / "realProperties.json"
+
+
+def _write_json_atomic(path: Path, data: Any) -> None:
+    """Schreibt JSON atomar: erst in eine Temp-Datei im selben Ordner, dann per
+    os.replace austauschen. So liest Next.js (das die Datei importiert) nie eine
+    halb geschriebene Datei, die den Build mit einer 404 abbrechen lässt."""
+    tmp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        # Unter Windows schlägt os.replace fehl, solange ein anderer Prozess die
+        # Zieldatei gerade geöffnet hat (z. B. der Next.js-Watcher) → kurz erneut versuchen.
+        for attempt in range(10):
+            try:
+                os.replace(tmp_path, path)
+                return
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 MANNHEIM_LAT = 49.4875
 MANNHEIM_LON = 8.4660
@@ -511,7 +537,6 @@ def persist_new_deal_to_json(ext_raw: ExtendedRawListing, deal: EnrichedDeal) ->
             ],
         }
         updated = [dto] + existing[:350]
-        with open(REAL_PROPERTIES_PATH, "w", encoding="utf-8") as f:
-            json.dump(updated, f, ensure_ascii=False, indent=2)
+        _write_json_atomic(REAL_PROPERTIES_PATH, updated)
     except Exception as exc:
         print(f"[Persist JSON] Warnung: {exc}")
